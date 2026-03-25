@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const https = require('https');
 
-const token = '8637771357:AAERd9Bn7GRXftbqcvLH5wtFto5k2KblOfY';
+const token = '8637771357:AAFl9jNirQydnPDFry-AzaBIADP1FqSjIE8';
 const bot = new TelegramBot(token, { polling: true });
 
 // 🔐 ADMIN
