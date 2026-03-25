@@ -6,7 +6,7 @@ const token = '8637771357:AAERd9Bn7GRXftbqcvLH5wtFto5k2KblOfY';
 const bot = new TelegramBot(token, { polling: true });
 
 // 🔐 ADMIN
-const ADMIN_ID = 8637771357;
+const ADMIN_ID = 5474672519;
 
 // User systems
 const userCooldown = new Map();
