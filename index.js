@@ -1,16 +1,22 @@
-
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const https = require('https');
 
 const token = '8637771357:AAERd9Bn7GRXftbqcvLH5wtFto5k2KblOfY';
 const bot = new TelegramBot(token, { polling: true });
 
+// 🔐 ADMIN
+const ADMIN_ID = 8637771357;
+
+// User systems
 const userCooldown = new Map();
 const userCountry = new Map();
 const userLastMessage = new Map();
+const adminState = new Map();
 
 const COOLDOWN_MS = 10 * 1000;
 
+// Countries
 const countries = {
     '🇧🇩': { name: 'Bangladesh', file: 'bd.txt' },
     '🇺🇸': { name: 'USA', file: 'usa.txt' },
@@ -20,7 +26,12 @@ const countries = {
     '🇩🇪': { name: 'Germany', file: 'germany.txt' }
 };
 
-// Country buttons
+// Admin check
+function isAdmin(id) {
+    return id === ADMIN_ID;
+}
+
+// Keyboard
 function getCountryKeyboard() {
     const keyboard = [];
     let row = [];
@@ -42,7 +53,7 @@ function getCountryKeyboard() {
     return { inline_keyboard: keyboard };
 }
 
-// Show numbers (edit message)
+// Send numbers (edit message)
 async function sendNumbers(chatId, numbersToSend, remaining, flag) {
     const countryName = countries[flag].name;
 
@@ -62,10 +73,9 @@ async function sendNumbers(chatId, numbersToSend, remaining, flag) {
 
     try {
         if (userLastMessage.has(chatId)) {
-            const msgId = userLastMessage.get(chatId);
             await bot.editMessageText(text, {
                 chat_id: chatId,
-                message_id: msgId,
+                message_id: userLastMessage.get(chatId),
                 reply_markup: keyboard
             });
         } else {
@@ -74,7 +84,7 @@ async function sendNumbers(chatId, numbersToSend, remaining, flag) {
             });
             userLastMessage.set(chatId, sent.message_id);
         }
-    } catch (err) {
+    } catch {
         const sent = await bot.sendMessage(chatId, text, {
             reply_markup: keyboard
         });
@@ -82,7 +92,7 @@ async function sendNumbers(chatId, numbersToSend, remaining, flag) {
     }
 }
 
-// Read + remove numbers
+// Get numbers
 function getNumbers(filePath) {
     if (!fs.existsSync(filePath)) return null;
 
@@ -102,16 +112,36 @@ function getNumbers(filePath) {
     };
 }
 
-// Callback handler
+// ===================== CALLBACK =====================
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
 
-    try {
-        await bot.answerCallbackQuery(query.id);
-    } catch (e) {}
+    try { await bot.answerCallbackQuery(query.id); } catch {}
 
-    // Select country
+    // 🔐 ADMIN BUTTONS
+    if (data === "admin_upload") {
+        if (!isAdmin(query.from.id)) return;
+        adminState.set(chatId, { step: "upload" });
+        return bot.sendMessage(chatId, "📤 Send .txt file");
+    }
+
+    if (data === "admin_delete") {
+        if (!isAdmin(query.from.id)) return;
+        adminState.set(chatId, { step: "delete" });
+        return bot.sendMessage(chatId, "🗑 Send file name (bd.txt)");
+    }
+
+    if (data === "admin_list") {
+        if (!isAdmin(query.from.id)) return;
+
+        if (!fs.existsSync("./numbers")) return bot.sendMessage(chatId, "No folder");
+
+        const files = fs.readdirSync("./numbers");
+        return bot.sendMessage(chatId, "📂 Countries:\n\n" + files.join("\n"));
+    }
+
+    // 🌍 COUNTRY SELECT
     if (data.startsWith('country_')) {
         const flag = data.replace('country_', '');
         userCountry.set(chatId, flag);
@@ -119,48 +149,38 @@ bot.on('callback_query', async (query) => {
         const filePath = `./numbers/${countries[flag].file}`;
         const result = getNumbers(filePath);
 
-        if (!result) {
-            return bot.sendMessage(chatId, "❌ Not enough numbers!");
-        }
+        if (!result) return bot.sendMessage(chatId, "❌ Not enough numbers!");
 
         userCooldown.set(chatId, Date.now());
         await sendNumbers(chatId, result.sendList, result.remaining, flag);
     }
 
-    // Next numbers
+    // ➡️ NEXT
     else if (data === 'next_numbers') {
         const lastTime = userCooldown.get(chatId) || 0;
-
-        const now = Date.now();
-        const diff = now - lastTime;
+        const diff = Date.now() - lastTime;
 
         if (diff < COOLDOWN_MS) {
-            const remainingMs = COOLDOWN_MS - diff;
-            const remainingSec = Math.ceil(remainingMs / 1000);
-
+            const sec = Math.ceil((COOLDOWN_MS - diff) / 1000);
             return bot.answerCallbackQuery(query.id, {
-                text: `⏳ Please wait ${remainingSec} sec`,
+                text: `⏳ Wait ${sec} sec`,
                 show_alert: true
             });
         }
 
         const flag = userCountry.get(chatId);
-        if (!flag) {
-            return bot.sendMessage(chatId, "🌍 Select country first!");
-        }
+        if (!flag) return bot.sendMessage(chatId, "Select country first");
 
         const filePath = `./numbers/${countries[flag].file}`;
         const result = getNumbers(filePath);
 
-        if (!result) {
-            return bot.sendMessage(chatId, "❌ No numbers left!");
-        }
+        if (!result) return bot.sendMessage(chatId, "❌ No numbers left!");
 
         userCooldown.set(chatId, Date.now());
         await sendNumbers(chatId, result.sendList, result.remaining, flag);
     }
 
-    // Change country
+    // 🔄 CHANGE
     else if (data === 'change_country') {
         const sent = await bot.sendMessage(chatId, "🌍 Select country:", {
             reply_markup: getCountryKeyboard()
@@ -170,7 +190,71 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// Start command
+// ===================== ADMIN COMMAND =====================
+bot.onText(/\/admin/, (msg) => {
+    if (!isAdmin(msg.from.id)) return;
+
+    bot.sendMessage(msg.chat.id, "⚙️ Admin Panel", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "📤 Upload File", callback_data: "admin_upload" }],
+                [{ text: "🗑 Delete Country", callback_data: "admin_delete" }],
+                [{ text: "📂 Country List", callback_data: "admin_list" }]
+            ]
+        }
+    });
+});
+
+// ===================== MESSAGE =====================
+bot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+
+    if (!isAdmin(msg.from.id)) return;
+    if (!adminState.has(chatId)) return;
+
+    const state = adminState.get(chatId);
+
+    // DELETE
+    if (state.step === "delete") {
+        const file = `./numbers/${msg.text}`;
+
+        if (fs.existsSync(file)) {
+            fs.unlinkSync(file);
+            bot.sendMessage(chatId, "✅ Deleted");
+        } else {
+            bot.sendMessage(chatId, "❌ File not found");
+        }
+
+        adminState.delete(chatId);
+    }
+
+    // UPLOAD
+    if (state.step === "upload" && msg.document) {
+        const fileId = msg.document.file_id;
+        const fileName = msg.document.file_name;
+
+        if (!fileName.endsWith(".txt")) {
+            return bot.sendMessage(chatId, "Only .txt allowed");
+        }
+
+        const link = await bot.getFileLink(fileId);
+
+        if (!fs.existsSync("./numbers")) fs.mkdirSync("./numbers");
+
+        const file = fs.createWriteStream(`./numbers/${fileName}`);
+
+        https.get(link, (res) => {
+            res.pipe(file);
+            file.on("finish", () => {
+                bot.sendMessage(chatId, "✅ Uploaded");
+            });
+        });
+
+        adminState.delete(chatId);
+    }
+});
+
+// START
 bot.onText(/\/start|\/getnumber/, (msg) => {
     bot.sendMessage(msg.chat.id, "🌍 Welcome!\nSelect country:", {
         reply_markup: getCountryKeyboard()
@@ -178,4 +262,3 @@ bot.onText(/\/start|\/getnumber/, (msg) => {
 });
 
 console.log("✅ Bot Running...");
-
