@@ -23,7 +23,8 @@ const countries = {
     '🇬🇧': { name: 'UK', file: 'uk.txt' },
     '🇮🇳': { name: 'India', file: 'india.txt' },
     '🇨🇦': { name: 'Canada', file: 'canada.txt' },
-    '🇩🇪': { name: 'Germany', file: 'germany.txt' }
+    '🇩🇪': { name: 'Germany', file: 'germany.txt' },
+    '🇦🇫': { name: 'Afghanistan', file: 'af.txt' }
 };
 
 // Admin check
