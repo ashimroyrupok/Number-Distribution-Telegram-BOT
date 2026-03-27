@@ -2,10 +2,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const https = require('https');
 
-const token = '8637771357:AAFl9jNirQydnPDFry-AzaBIADP1FqSjIE8';   // ← তোমার নতুন Token
+const token = '8637771357:AAFl9jNirQydnPDFry-AzaBIADP1FqSjIE8';
 const bot = new TelegramBot(token, { polling: true });
 
-// 🔐 ADMIN
 const ADMIN_ID = 5474672519;
 
 const userCooldown = new Map();
@@ -15,7 +14,8 @@ const adminState = new Map();
 
 const COOLDOWN_MS = 10 * 1000;
 
-// Countries (Admin নতুন যোগ করতে পারবে)
+const allUsers = new Set();
+
 let countries = {
     '🇧🇩': { name: 'Bangladesh', file: 'bd.txt' },
     '🇺🇸': { name: 'USA', file: 'usa.txt' },
@@ -47,7 +47,7 @@ function getCountryKeyboard() {
     return { inline_keyboard: keyboard };
 }
 
-// ==================== Dynamo OTP UI ====================
+// ==================== UI ====================
 async function sendNumbers(chatId, numbersToSend, remaining, flag) {
     const countryName = countries[flag].name;
 
@@ -57,7 +57,7 @@ async function sendNumbers(chatId, numbersToSend, remaining, flag) {
     text += `📋 Numbers:\n\n`;
 
     numbersToSend.forEach(num => {
-        text += `📋 ${flag} ${num.trim()}\n\n`;
+        text += `+${num.trim()}\n\n`;
     });
 
     const keyboard = {
@@ -76,11 +76,17 @@ async function sendNumbers(chatId, numbersToSend, remaining, flag) {
                 reply_markup: keyboard
             });
         } else {
-            const sent = await bot.sendMessage(chatId, text, { reply_markup: keyboard });
+            const sent = await bot.sendMessage(chatId, text, { 
+                parse_mode: 'Markdown',
+                reply_markup: keyboard 
+            });
             userLastMessage.set(chatId, sent.message_id);
         }
     } catch (e) {
-        const sent = await bot.sendMessage(chatId, text, { reply_markup: keyboard });
+        const sent = await bot.sendMessage(chatId, text, { 
+            parse_mode: 'Markdown',
+            reply_markup: keyboard 
+        });
         userLastMessage.set(chatId, sent.message_id);
     }
 }
@@ -102,12 +108,14 @@ function getNumbers(filePath) {
     return { sendList, remaining: remainingList.length };
 }
 
-// ===================== CALLBACK =====================
+// ===================== CALLBACK HANDLER =====================
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
 
-    try { await bot.answerCallbackQuery(query.id); } catch {}
+    try { 
+        await bot.answerCallbackQuery(query.id); 
+    } catch (e) {}
 
     // ADMIN PANEL
     if (data === "admin_panel" || data === "/admin") {
@@ -118,37 +126,47 @@ bot.on('callback_query', async (query) => {
                     [{ text: "📤 Upload File", callback_data: "admin_upload" }],
                     [{ text: "🗑 Delete Country", callback_data: "admin_delete" }],
                     [{ text: "📂 Country List", callback_data: "admin_list" }],
-                    [{ text: "➕ Add New Country", callback_data: "admin_add_country" }]
+                    [{ text: "➕ Add New Country", callback_data: "admin_add_country" }],
+                    [{ text: "📢 Broadcast Message", callback_data: "admin_broadcast" }]
                 ]
             }
         });
     }
 
-    // ➕ ADD NEW COUNTRY
-    if (data === "admin_add_country") {
+    // DELETE COUNTRY
+    if (data === "admin_delete") {
         if (!isAdmin(query.from.id)) return;
-        adminState.set(chatId, { step: "add_country_flag" });
-        return bot.sendMessage(chatId, "➕ Add New Country\n\nSend Country Flag (যেমন: 🇧🇷)");
+        adminState.set(chatId, { step: "delete" });
+        return bot.sendMessage(chatId, "🗑 Send the file name you want to delete\n(Example: germany.txt)");
     }
 
-    // ADMIN BUTTONS
+    // UPLOAD
     if (data === "admin_upload") {
         if (!isAdmin(query.from.id)) return;
         adminState.set(chatId, { step: "upload" });
         return bot.sendMessage(chatId, "📤 Send .txt file");
     }
 
-    if (data === "admin_delete") {
-        if (!isAdmin(query.from.id)) return;
-        adminState.set(chatId, { step: "delete" });
-        return bot.sendMessage(chatId, "🗑 Send file name (যেমন: bd.txt)");
-    }
-
+    // LIST
     if (data === "admin_list") {
         if (!isAdmin(query.from.id)) return;
         if (!fs.existsSync("./numbers")) return bot.sendMessage(chatId, "No folder");
         const files = fs.readdirSync("./numbers");
         return bot.sendMessage(chatId, "📂 Countries:\n\n" + files.join("\n"));
+    }
+
+    // ADD NEW COUNTRY
+    if (data === "admin_add_country") {
+        if (!isAdmin(query.from.id)) return;
+        adminState.set(chatId, { step: "add_country_flag" });
+        return bot.sendMessage(chatId, "➕ Add New Country\n\nSend Country Flag (Example: 🇧🇷)");
+    }
+
+    // BROADCAST
+    if (data === "admin_broadcast") {
+        if (!isAdmin(query.from.id)) return;
+        adminState.set(chatId, { step: "broadcast" });
+        return bot.sendMessage(chatId, "📢 Send the message you want to broadcast to all users:");
     }
 
     // COUNTRY SELECT
@@ -195,28 +213,48 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// ===================== ADMIN MESSAGE HANDLER (Add New Country) =====================
+// ===================== ADMIN MESSAGE HANDLER =====================
 bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
+    const text = msg.text;
+
     if (!isAdmin(msg.from.id)) return;
     if (!adminState.has(chatId)) return;
 
     const state = adminState.get(chatId);
-    const text = msg.text;
 
-    // Step 1: Flag
+    // Broadcast
+    if (state.step === "broadcast") {
+        const { success, failed } = await broadcastMessage(text);
+        bot.sendMessage(chatId, `✅ Broadcast Completed!\nSent to: ${success} users\nFailed: ${failed} users`);
+        adminState.delete(chatId);
+        return;
+    }
+
+    // Delete Country
+    if (state.step === "delete") {
+        const filePath = `./numbers/${text}`;
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            bot.sendMessage(chatId, `✅ File ${text} deleted successfully!`);
+        } else {
+            bot.sendMessage(chatId, `❌ File ${text} not found!`);
+        }
+        adminState.delete(chatId);
+        return;
+    }
+
+    // Add New Country Steps
     if (state.step === "add_country_flag") {
         adminState.set(chatId, { step: "add_country_name", flag: text });
-        return bot.sendMessage(chatId, `Flag Received: ${text}\n\nNow send Country Full Name (Example: Brazil)`);
+        return bot.sendMessage(chatId, `Flag: ${text}\n\nSend Country Full Name`);
     }
 
-    // Step 2: Country Name
     if (state.step === "add_country_name") {
         adminState.set(chatId, { step: "add_country_file", flag: state.flag, name: text });
-        return bot.sendMessage(chatId, `Country Name: ${text}\n\nNow send File Name (Example: brazil.txt)`);
+        return bot.sendMessage(chatId, `Name: ${text}\n\nSend File Name (example: brazil.txt)`);
     }
 
-    // Step 3: File Name + Save
     if (state.step === "add_country_file") {
         const newFlag = state.flag;
         const newName = state.name;
@@ -224,12 +262,11 @@ bot.on("message", async (msg) => {
 
         countries[newFlag] = { name: newName, file: newFile };
 
-        bot.sendMessage(chatId, `✅ New Country Added Successfully!\n\nFlag: ${newFlag}\nName: ${newName}\nFile: ${newFile}\n\nNow upload numbers in ${newFile}`);
-
+        bot.sendMessage(chatId, `✅ New Country Added!\nFlag: ${newFlag}\nName: ${newName}\nFile: ${newFile}`);
         adminState.delete(chatId);
     }
 
-    // UPLOAD
+    // Upload
     if (state.step === "upload" && msg.document) {
         const fileId = msg.document.file_id;
         const fileName = msg.document.file_name;
@@ -246,47 +283,50 @@ bot.on("message", async (msg) => {
         https.get(link, (res) => {
             res.pipe(file);
             file.on("finish", () => {
-                bot.sendMessage(chatId, `✅ File ${fileName} Uploaded Successfully!`);
+                bot.sendMessage(chatId, `✅ ${fileName} Uploaded Successfully!`);
             });
         });
 
         adminState.delete(chatId);
     }
-
-    // DELETE
-    if (state.step === "delete") {
-        const file = `./numbers/${text}`;
-        if (fs.existsSync(file)) {
-            fs.unlinkSync(file);
-            bot.sendMessage(chatId, "✅ Deleted");
-        } else {
-            bot.sendMessage(chatId, "❌ File not found");
-        }
-        adminState.delete(chatId);
-    }
 });
 
-// ===================== ADMIN COMMAND =====================
+async function broadcastMessage(text) {
+    let success = 0;
+    let failed = 0;
+
+    for (const userId of allUsers) {
+        try {
+            await bot.sendMessage(userId, text, { parse_mode: 'Markdown' });
+            success++;
+        } catch (e) {
+            failed++;
+        }
+    }
+    return { success, failed };
+}
+
+// START
+bot.onText(/\/start|\/getnumber/, (msg) => {
+    allUsers.add(msg.chat.id);
+    bot.sendMessage(msg.chat.id, "🌍 Welcome to Dynamo OTP!\nPlease select your country:", {
+        reply_markup: getCountryKeyboard()
+    });
+});
+
 bot.onText(/\/admin/, (msg) => {
     if (!isAdmin(msg.from.id)) return;
-
     bot.sendMessage(msg.chat.id, "⚙️ Admin Panel", {
         reply_markup: {
             inline_keyboard: [
                 [{ text: "📤 Upload File", callback_data: "admin_upload" }],
                 [{ text: "🗑 Delete Country", callback_data: "admin_delete" }],
                 [{ text: "📂 Country List", callback_data: "admin_list" }],
-                [{ text: "➕ Add New Country", callback_data: "admin_add_country" }]
+                [{ text: "➕ Add New Country", callback_data: "admin_add_country" }],
+                [{ text: "📢 Broadcast Message", callback_data: "admin_broadcast" }]
             ]
         }
     });
 });
 
-// START
-bot.onText(/\/start|\/getnumber/, (msg) => {
-    bot.sendMessage(msg.chat.id, "🌍 Welcome to Dynamo OTP!\nPlease select your country:", {
-        reply_markup: getCountryKeyboard()
-    });
-});
-
-console.log("✅ Dynamo OTP Bot Running with Add New Country Feature!");
+console.log("✅ Dynamo OTP Bot Running with Fixed Delete Country Feature!");
